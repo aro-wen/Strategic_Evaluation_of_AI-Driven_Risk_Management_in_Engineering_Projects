@@ -318,3 +318,116 @@ with tab_data:
         data=df.to_csv(index=False).encode("utf-8"),
         file_name="enriched_ai_risk_dataset.csv"
     )
+
+tab_analytics, = st.tabs(["Analytics"])
+
+with tab_analytics:
+    # ---- Helper prep ----
+    ROLE_MAP = {1: "Student", 2: "Engineer", 3: "Project Manager", 4: "Other"}
+    GENDER_MAP = {1: "Male", 2: "Female", 3: "Prefer not to say"}
+    PTYPE_MAP = {1: "Construction", 2: "IT/Software", 3: "Manufacturing", 4: "Energy", 5: "Other"}
+
+    dfa = df.copy()
+    dfa["ROLE_LBL"] = dfa["ROLE"].map(ROLE_MAP).fillna(dfa["ROLE"].astype(str))
+    dfa["GENDER_LBL"] = dfa["GENDER"].map(GENDER_MAP).fillna(dfa["GENDER"].astype(str))
+    dfa["PTYPE_LBL"] = dfa["PTYPE"].map(PTYPE_MAP).fillna(dfa["PTYPE"].astype(str))
+
+    # Risk subscale means
+    RISK_ID = ["RISK_ID_1","RISK_ID_2","RISK_ID_3"]
+    RISK_ASSESS = ["RISK_ASSESS_1","RISK_ASSESS_2","RISK_ASSESS_3"]
+    RISK_MIT = ["RISK_MIT_1","RISK_MIT_2","RISK_MIT_3"]
+    AI_READY = ["AI_READY_1","AI_READY_2","AI_READY_3","AI_READY_4","AI_READY_5","AI_READY_6"]
+
+    dfa["RISK_ID_MEAN"] = dfa[RISK_ID].mean(axis=1)
+    dfa["RISK_ASSESS_MEAN"] = dfa[RISK_ASSESS].mean(axis=1)
+    dfa["RISK_MIT_MEAN"] = dfa[RISK_MIT].mean(axis=1)
+
+    st.markdown("## Analytics")
+
+    # Row 1: Age distribution + AI readiness hist + Risk vs AI scatter
+    c1, c2, c3 = st.columns(3)
+
+    # Age Distribution (bar / histogram)
+    fig_age = px.histogram(dfa, x="AGE", nbins=10, title="Age Distribution")
+    fig_age.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c1.plotly_chart(fig_age, use_container_width=True)
+
+    # AI Readiness (overall) distribution
+    fig_ai = px.histogram(dfa, x="AI_SCORE", nbins=10, title="AI Readiness (Overall) Distribution")
+    fig_ai.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c2.plotly_chart(fig_ai, use_container_width=True)
+
+    # Risk Identification vs AI Readiness (point graph)
+    fig_scatter = px.scatter(
+        dfa, x="RISK_ID_MEAN", y="AI_SCORE",
+        hover_data=["ID","AGE","ROLE_LBL","EXP"],
+        trendline="ols", title="Risk Identification vs. AI Readiness"
+    )
+    fig_scatter.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c3.plotly_chart(fig_scatter, use_container_width=True)
+
+    # Row 2: Risk practice by role + AI readiness item distributions (grid)
+    st.markdown("### Risk Practice by Role & AI Readiness Item Distributions")
+
+    c4, c5 = st.columns([1.2, 1.8])
+
+    # Risk Practice Scores by Role (box or violin)
+    fig_role_risk = px.box(
+        dfa, x="ROLE_LBL", y="RISK_SCORE",
+        title="Risk Practice Scores by Role",
+        points="all"
+    )
+    fig_role_risk.update_layout(xaxis_title="", margin=dict(l=0,r=0,t=40,b=0))
+    c4.plotly_chart(fig_role_risk, use_container_width=True)
+
+    # AI Readiness Item Distributions (small multiples)
+    # Build a long-form frame for AI items
+    ai_long = dfa[["ID"] + AI_READY].melt(id_vars="ID", var_name="AI_ITEM", value_name="SCORE")
+    fig_ai_items = px.histogram(
+        ai_long, x="SCORE", facet_col="AI_ITEM", facet_col_wrap=3,
+        category_orders={"AI_ITEM": AI_READY},
+        title="AI Readiness Item Distributions (Q15–Q20)"
+    )
+    fig_ai_items.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c5.plotly_chart(fig_ai_items, use_container_width=True)
+
+    # Row 3: Risk boxplots (ID / ASSESS / MIT)
+    st.markdown("### Risk Construct Boxplots")
+
+    c6, c7, c8 = st.columns(3)
+
+    fig_id_box = px.box(
+        dfa[RISK_ID].melt(var_name="Item", value_name="Score"),
+        x="Item", y="Score", title="Risk Identification Boxplots"
+    )
+    fig_id_box.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c6.plotly_chart(fig_id_box, use_container_width=True)
+
+    fig_assess_box = px.box(
+        dfa[RISK_ASSESS].melt(var_name="Item", value_name="Score"),
+        x="Item", y="Score", title="Risk Assessment Boxplots"
+    )
+    fig_assess_box.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c7.plotly_chart(fig_assess_box, use_container_width=True)
+
+    fig_mit_box = px.box(
+        dfa[RISK_MIT].melt(var_name="Item", value_name="Score"),
+        x="Item", y="Score", title="Risk Mitigation Boxplots"
+    )
+    fig_mit_box.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    c8.plotly_chart(fig_mit_box, use_container_width=True)
+
+    # Row 4: Correlation heatmap
+    st.markdown("### Correlation Heatmap")
+    corr = dfa[["AGE","GENDER","ROLE","EXP","PTYPE","RISK_ID_MEAN","RISK_ASSESS_MEAN","RISK_MIT_MEAN","RISK_SCORE","AI_SCORE","Z_RISK","Z_AI"]].corr().round(2)
+    fig_heat = px.imshow(
+        corr, text_auto=True, aspect="auto", title="Correlation Heatmap (Demographics, Risk Constructs, AI)"
+    )
+    fig_heat.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+    st.plotly_chart(fig_heat, use_container_width=True)
+
+    # Footnotes (captions)
+    st.caption(
+        "Notes: Risk Identification/Assessment/Mitigation are 3-item means; AI Readiness is a 6-item composite. "
+        "Boxes show median and IQR; whiskers extend to 1.5×IQR. Trendline via OLS."
+    )
