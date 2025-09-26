@@ -13,8 +13,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Config
@@ -81,25 +79,31 @@ SAMPLE_CSV = """ID,AGE,GENDER,ROLE,EXP,PTYPE,RISK_ID_1,RISK_ID_2,RISK_ID_3,RISK_
 def cronbach_alpha(df: pd.DataFrame) -> float:
     df = df.dropna()
     k = df.shape[1]
-    if k < 2: return np.nan
+    if k < 2:
+        return np.nan
     v_sum = df.var(ddof=1).sum()
     v_tot = df.sum(axis=1).var(ddof=1)
-    if v_tot == 0: return np.nan
+    if v_tot == 0:
+        return np.nan
     return (k/(k-1)) * (1 - v_sum / v_tot)
+
+def _safe_z(series: pd.Series) -> pd.Series:
+    m = series.mean()
+    s = series.std(ddof=1)
+    if pd.isna(s) or s == 0:
+        return pd.Series(0.0, index=series.index)
+    return (series - m) / s
 
 def compute_scores(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["RISK_SUM"] = out[ALL_RISK].sum(axis=1)
-    out["RISK_SCORE"] = out["RISK_SUM"]/9.0
+    out["RISK_SCORE"] = out["RISK_SUM"]/9.0  # 9 risk items
     out["AI_SUM"] = out[AI_READY].sum(axis=1)
-    out["AI_SCORE"] = out["AI_SUM"]/6.0
-    out["Z_RISK"] = (out["RISK_SCORE"] - out["RISK_SCORE"].mean())/out["RISK_SCORE"].std(ddof=1)
-    out["Z_AI"] = (out["AI_SCORE"] - out["AI_SCORE"].mean())/out["AI_SCORE"].std(ddof=1)
+    out["AI_SCORE"] = out["AI_SUM"]/6.0      # 6 AI items
+    # Robust z-scores (avoid divide-by-zero)
+    out["Z_RISK"] = _safe_z(out["RISK_SCORE"])
+    out["Z_AI"]   = _safe_z(out["AI_SCORE"])
     return out
-
-def tertiles(x: pd.Series) -> pd.Series:
-    q33, q66 = x.quantile([0.33,0.66])
-    return x.apply(lambda v: "Low" if v<=q33 else ("Medium" if v<=q66 else "High"))
 
 def pct(mask: pd.Series) -> str:
     return f"{(mask.mean()*100):.0f}%"
@@ -133,7 +137,8 @@ alpha = {
 # K-means clustering on standardized Z-scores
 scaler = StandardScaler()
 X = scaler.fit_transform(df[["Z_RISK","Z_AI"]].values)
-km = KMeans(n_clusters=K_CLUSTERS, n_init="auto", random_state=42)
+# Fix: n_init as int for compatibility (avoids 'auto' errors on older sklearn)
+km = KMeans(n_clusters=K_CLUSTERS, n_init=10, random_state=42)
 labels = km.fit_predict(X)
 df["CLUSTER"] = labels
 
@@ -157,13 +162,13 @@ except Exception:
 champions = df[(df["Z_RISK"]>=CHAMPION_Z) & (df["Z_AI"]>=CHAMPION_Z)]
 vulnerable = df[(df["Z_RISK"]>=VULN_RISK_Z) & (df["Z_AI"]<=VULN_AI_Z)]
 
-# Isolation Forest anomalies (fixed contamination)
+# Isolation Forest anomalies (fixed contamination) — guard against NaNs
 iso = IsolationForest(n_estimators=100, contamination=ANOMALY_SHARE, random_state=42)
-df["ANOMALY"] = iso.fit_predict(df[["Z_RISK","Z_AI"]])
+df["ANOMALY"] = iso.fit_predict(df[["Z_RISK","Z_AI"]].fillna(0.0))
 df["ANOMALY_FLAG"] = df["ANOMALY"].map({-1:"Anomaly", 1:"Normal"})
 
-# Correlations
-corr_targets = df[["AGE","GENDER","ROLE","EXP","PTYPE","RISK_SCORE","AI_SCORE","Z_RISK","Z_AI"]].corr()
+# Correlations (be explicit; avoids future dtype warnings)
+corr_targets = df[["AGE","GENDER","ROLE","EXP","PTYPE","RISK_SCORE","AI_SCORE","Z_RISK","Z_AI"]].corr(numeric_only=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # KPI Row
@@ -236,10 +241,17 @@ with tab_champ:
 # ─────────────────────────────────────────────────────────────────────────────
 with tab_insight:
     st.markdown("### Correlation Heatmap (Key Fields)")
-    heat = px.imshow(
-        corr_targets.round(2),
-        text_auto=True, aspect="auto", title="Correlation Heatmap"
-    )
+    try:
+        heat = px.imshow(
+            corr_targets.round(2),
+            text_auto=True, aspect="auto", title="Correlation Heatmap"
+        )
+    except TypeError:
+        # Older plotly without text_auto
+        heat = px.imshow(
+            corr_targets.round(2),
+            aspect="auto", title="Correlation Heatmap"
+        )
     st.plotly_chart(heat, use_container_width=True)
 
     # Lightweight “driver” view: mean AI score per category vs overall
@@ -319,6 +331,9 @@ with tab_data:
         file_name="enriched_ai_risk_dataset.csv"
     )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Analytics (extra)
+# ─────────────────────────────────────────────────────────────────────────────
 tab_analytics, = st.tabs(["Analytics"])
 
 with tab_analytics:
@@ -358,11 +373,19 @@ with tab_analytics:
     c2.plotly_chart(fig_ai, use_container_width=True)
 
     # Risk Identification vs AI Readiness (point graph)
-    fig_scatter = px.scatter(
-        dfa, x="RISK_ID_MEAN", y="AI_SCORE",
-        hover_data=["ID","AGE","ROLE_LBL","EXP"],
-        trendline="ols", title="Risk Identification vs. AI Readiness"
-    )
+    # Safe fallback if statsmodels isn't installed (trendline requires it)
+    try:
+        fig_scatter = px.scatter(
+            dfa, x="RISK_ID_MEAN", y="AI_SCORE",
+            hover_data=["ID","AGE","ROLE_LBL","EXP"],
+            trendline="ols", title="Risk Identification vs. AI Readiness"
+        )
+    except Exception:
+        fig_scatter = px.scatter(
+            dfa, x="RISK_ID_MEAN", y="AI_SCORE",
+            hover_data=["ID","AGE","ROLE_LBL","EXP"],
+            title="Risk Identification vs. AI Readiness"
+        )
     fig_scatter.update_layout(margin=dict(l=0,r=0,t=40,b=0))
     c3.plotly_chart(fig_scatter, use_container_width=True)
 
@@ -419,15 +442,20 @@ with tab_analytics:
 
     # Row 4: Correlation heatmap
     st.markdown("### Correlation Heatmap")
-    corr = dfa[["AGE","GENDER","ROLE","EXP","PTYPE","RISK_ID_MEAN","RISK_ASSESS_MEAN","RISK_MIT_MEAN","RISK_SCORE","AI_SCORE","Z_RISK","Z_AI"]].corr().round(2)
-    fig_heat = px.imshow(
-        corr, text_auto=True, aspect="auto", title="Correlation Heatmap (Demographics, Risk Constructs, AI)"
-    )
+    corr = dfa[["AGE","GENDER","ROLE","EXP","PTYPE","RISK_ID_MEAN","RISK_ASSESS_MEAN","RISK_MIT_MEAN","RISK_SCORE","AI_SCORE","Z_RISK","Z_AI"]].corr(numeric_only=True).round(2)
+    try:
+        fig_heat = px.imshow(
+            corr, text_auto=True, aspect="auto", title="Correlation Heatmap (Demographics, Risk Constructs, AI)"
+        )
+    except TypeError:
+        fig_heat = px.imshow(
+            corr, aspect="auto", title="Correlation Heatmap (Demographics, Risk Constructs, AI)"
+        )
     fig_heat.update_layout(margin=dict(l=0,r=0,t=40,b=0))
     st.plotly_chart(fig_heat, use_container_width=True)
 
     # Footnotes (captions)
     st.caption(
         "Notes: Risk Identification/Assessment/Mitigation are 3-item means; AI Readiness is a 6-item composite. "
-        "Boxes show median and IQR; whiskers extend to 1.5×IQR. Trendline via OLS."
+        "Boxes show median and IQR; whiskers extend to 1.5×IQR. Trendline via OLS (if statsmodels available)."
     )
